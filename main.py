@@ -1,79 +1,98 @@
-from sqlite3 import connect
-import aiogram
-from aiogram import executor, Dispatcher, Bot, types
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+import types
+from clickhouse_driver import Client
+import random
+from captcha.image import ImageCaptcha
+import config
+import os
+import asyncio
+
+from aiogram import executor, types
 from loader import dp, bot
 from aiogram.dispatcher import FSMContext
 from aiogram.types import ContentType
-from telethon.tl.functions.channels import JoinChannelRequest
-from telethon.tl.functions.contacts import ResolveUsernameRequest
-from captcha.image import ImageCaptcha
-import telethon
-import config
-import random
-import os
-from clickhouse_driver import Client
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
+from telethon.tl.functions.channels import JoinChannelRequest
+import telethon
+
+"""Keyboards"""
 inline_btn_1 = InlineKeyboardButton('Проверить✅', callback_data='Check')
 inline_kb1 = InlineKeyboardMarkup().add(inline_btn_1)
-links = ['@WeTON_play', '@Toncoin_blokchain', '@TON_NFT_Collection']
 
-async def connect_to_links():
+def append_to_database(user_id, referrer, connected):
+    """Append user and referall link to database"""
+    client = Client('localhost', user='default', password='Mjolnir123', database='refferall')
+    client.execute(f"INSERT INTO refferall.users VALUES ('{user_id}', '{referrer}', '{connected}')")
+
+
+def get_referall_link(user_id):
+    """Get referall link from database"""
+    client = Client('localhost', user='default', password='Mjolnir123', database='refferall')
+    l = client.execute(f"SELECT * FROM refferall.users WHERE user = '{user_id}'")
+    try:
+        return l[0][1]
+    except:
+        return 'None'
+
+
+async def generate_referall_link():
+    """Generate random referall link"""
+    return "".join(str(random.randint(0,9)) for _ in range(0,24))
+
+
+async def generate_captcha():
+    """Generate captcha"""
+    letters = "0123456789abcdefghijklmnopqrstuvwxyz"
+    image = ImageCaptcha(width = 280, height = 90)
+    comment = "".join(random.choice(letters) for i in range(0, 6))
+    image.write(comment, f"{comment}.png")
+    return comment
+
+
+async def join_to_links():
     for i in os.listdir():
         if i.endswith('.session'):
             session = i
+    os.Popen(f"fuser {session} -k")
     client = telethon.TelegramClient(session, config.APP_ID, config.API_HASH)
     await client.start()
     await client.connect()
-    for link in links:
+    for link in config.LINKS:
         await client(JoinChannelRequest(link))
     await client.disconnect()
 
 
 async def parse_users(username):
+    """If user in all links, return True"""
     done = []
+    await asyncio.sleep(2)
     client = telethon.TelegramClient('blcklptn.session', config.APP_ID, config.API_HASH)
     await client.start()
     await client.connect()
-    for link in links:
+    for link in config.LINKS:
         users = await client.get_participants(link)
         for user in users:
             if user.username == username:
-                print('yes')
                 done.append(True)
     await client.disconnect()
-    if len (done) == len(links):
-        print('FUCK')
-        print(len(done))
-        print(len(links))
+    if len (done) == len(config.LINKS):
         return True
-    print(len(done))
-    print(len(links))
-    print("Whoops")
     return False
-
-
-async def generate_captcha():
-    letters = "0123456789abcdefghijklmnopqrstuvwxyz"
-    image = ImageCaptcha(width = 280, height = 90)
-    comment = "".join(random.choice(letters) for i in range(0, 6))
-    data = image.generate(comment)
-    image.write(comment, f"{comment}.png")
-    return comment
-
-async def get_referal_link(user):
-    #get from database
-
-    #generate link
-    return "https://t.me/GameTON_bot?start=r" + "".join(str(random.randint(0,9)) for _ in range(0,9))
 
 @dp.message_handler(commands=['start'], state = "*")
 async def start(message: types.Message, state: FSMContext):
     try:
-        him_link = message.text.split()[1]
+        connected = message.text.split()[1]
     except:
-        him_link = "None"
-    referal_link = await get_referal_link(message.from_user.id)
+        connected = 'None'
+    user_id = message.from_user.id
+
+    ref_link = get_referall_link(user_id)
+    if ref_link != 'None':
+        referall_link = ref_link
+    else:
+        referall_link = await generate_referall_link()
+        append_to_database(user_id, referall_link, connected)
     await message.answer(f"""WeTON_play  проводит розыгрыш 1000 NFT из 5 игровык коллекций
   
 Давайте еще раз вспомним про них:
@@ -89,7 +108,7 @@ Crystal Dragons - драконы контролирующие земли и ув
 @Toncoin_blokchain 🌐
 @TON_NFT_Collection 🧩
 2. Пригласить 1 человека по ссылке 🔗
-{referal_link}
+http://t.me/GameTON_bot?start={referall_link}
 
 Реферал засчитывается, если: ⚙️
 1. Он зашел и активировал бота по вашей ссылке.
@@ -101,10 +120,10 @@ Crystal Dragons - драконы контролирующие земли и ув
 😱Выявленные случаи мошенничества будут караться полным исключением всего реферального древа под нарушителем.
 
 Бот является продуктом CYBERTON 🐍
-""",reply_markup=inline_kb1)
+""", reply_markup=inline_kb1)
     await state.set_state("query")
-    await connect_to_links()
-
+    await join_to_links()
+    
 @dp.callback_query_handler(text='Check', state="query")
 async def process_callback_button1(callback_query: types.CallbackQuery, state: FSMContext):
     await bot.answer_callback_query(callback_query.id)
@@ -116,6 +135,7 @@ async def process_callback_button1(callback_query: types.CallbackQuery, state: F
             await state.set_state("query2")
     else:
         await bot.send_message(callback_query.from_user.id,"Для участия в конкурсе подпишитесь на канал @WeTON_play @Toncoin_blokchain @TON_NFT_Collection, а затем нажмите кнопку проверить.")
+
 
 @dp.callback_query_handler(text='Check', state="query2")
 async def process_callback_button1(callback_query: types.CallbackQuery, state: FSMContext):
@@ -149,5 +169,3 @@ async def process(message: types.Message, state: FSMContext):
 
 if __name__ == "__main__":
     executor.start_polling(dp, skip_updates=True)
-
-
